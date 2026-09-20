@@ -3,7 +3,7 @@
 A complete, working Lavalink v4 setup that plays music from Spotify links, Apple Music, YouTube,
 SoundCloud and more, **without needing a Spotify Premium subscription**.
 
-Copy the config, run one Docker container, paste in two values, and you have a working audio node
+Copy the config, run one Docker container, fill in four values, and you have a working audio node
 for your Discord bot.
 
 > [!NOTE]
@@ -635,9 +635,10 @@ providers:
 
 This is why YouTube breaking makes almost everything else appear broken too.
 
-Spotify restricted its Development Mode in February 2026, and apps now require the owner to hold
-Premium. Extended access needs a company application and 250,000 monthly active users, so it is not
-realistic for individuals. The token service sidesteps this by using the web player token, which
+Spotify announced a reduction in Development Mode scope on 6 February 2026. The restrictions,
+including a requirement that the app owner holds Premium, applied to newly created Client IDs from
+11 February 2026 and to all existing integrations from 9 March 2026. Extended access needs a company
+application and 250,000 monthly active users, so it is not realistic for individuals. The token service sidesteps this by using the web player token, which
 Spotify serves to free accounts.
 
 </details>
@@ -665,7 +666,7 @@ Spotify serves to free accounts.
 | Setting | Value | Why |
 | --- | --- | --- |
 | `preferPartnerApi` | `true` | Sends Spotify lookups through the token service. This is the setting that removes the Premium requirement |
-| `resolveArtistsInSearch` | `false` | If left `true`, LavaSrc calls an endpoint Spotify removed in February 2026, and every search returns 403 |
+| `resolveArtistsInSearch` | `false` | If left `true`, LavaSrc makes an extra batch call to the artists endpoint to enrich results. That call returns 403 on Development Mode apps, which fails the whole search. Setting it `false` skips the call |
 | `remoteCipher.url` | set | Lets someone else keep up with YouTube's player changes. Without it, YouTube breaks whenever YouTube ships a new player |
 | `flowerytts.voice` | set | Lavalink refuses to start without it |
 | `password` | not empty | An empty or `null` password makes the node reject every request |
