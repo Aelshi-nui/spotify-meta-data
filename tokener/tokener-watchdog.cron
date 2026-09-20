@@ -1,0 +1,4 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/10 * * * * root /usr/local/bin/tokener-watchdog.sh
+0 0 * * * root truncate -s 0 /var/log/tokener-watchdog.log

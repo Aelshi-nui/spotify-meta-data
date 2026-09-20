@@ -1,0 +1,13 @@
+[Unit]
+Description=Restrict spotify-tokener container port to allowlisted source addresses
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=NIC=eth0
+ExecStart=/usr/local/bin/tokener-fw.sh
+
+[Install]
+WantedBy=multi-user.target

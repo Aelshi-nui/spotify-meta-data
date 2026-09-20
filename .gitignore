@@ -1,0 +1,9 @@
+tokener-allow.list
+.env
+*.local.yml
+application.local.yml
+*.jar
+plugins/
+logs/
+__pycache__/
+*.pyc
