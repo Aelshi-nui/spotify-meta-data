@@ -1,107 +1,582 @@
 # Lavalink with Spotify Metadata (No Premium Required)
 
-A working Lavalink v4 configuration that resolves Spotify tracks, albums and editorial playlists
-without an active Spotify Premium subscription, plus the self-hosted token service it depends on.
+A complete, working Lavalink v4 setup that plays music from Spotify links, Apple Music, YouTube,
+SoundCloud and more, **without needing a Spotify Premium subscription**.
 
-Audio is never taken from Spotify. Spotify supplies metadata only, and playback is mirrored through
-YouTube. This is what makes the setup viable without Premium.
+Copy the config, run one Docker container, paste in two values, and you have a working audio node
+for your Discord bot.
 
-## Contents
+> [!NOTE]
+> Spotify is only used to read track names, artists and playlists. The actual audio is streamed from
+> YouTube. That is the reason this works without Premium.
 
-- [Why this exists](#why-this-exists)
+## Table of contents
+
+- [Before you start](#before-you-start)
+- [Setup](#setup)
+  - [1. Install Java and Docker](#1-install-java-and-docker)
+  - [2. Download this repository](#2-download-this-repository)
+  - [3. Download Lavalink](#3-download-lavalink)
+  - [4. Start the Spotify token service](#4-start-the-spotify-token-service)
+  - [5. Get your sp_dc cookie](#5-get-your-sp_dc-cookie)
+  - [6. Get your Spotify client ID and secret](#6-get-your-spotify-client-id-and-secret)
+  - [7. Fill in the config](#7-fill-in-the-config)
+  - [8. Start Lavalink](#8-start-lavalink)
+  - [9. Test that it works](#9-test-that-it-works)
+  - [10. Connect your bot](#10-connect-your-bot)
 - [Available sources](#available-sources)
-- [How it works](#how-it-works)
-- [Prerequisites](#prerequisites)
-- [Step 1: Deploy the token service](#step-1-deploy-the-token-service)
-- [Step 2: Obtain your sp_dc cookie](#step-2-obtain-your-sp_dc-cookie)
-- [Step 3: Configure Lavalink](#step-3-configure-lavalink)
-- [Step 4: Verify](#step-4-verify)
-- [Production hardening](#production-hardening)
-- [Pinned versions and why](#pinned-versions-and-why)
+- [Optional: production hardening](#optional-production-hardening)
 - [Troubleshooting](#troubleshooting)
+- [Reference](#reference)
 - [Terms of service](#terms-of-service)
 
-## Why this exists
+## Before you start
 
-Spotify restricted Development Mode in February 2026. Applications in Development Mode now require
-the **app owner** to hold an active Premium subscription. Without it, every Web API endpoint returns
-HTTP 403:
+You need:
 
-```json
-{ "error": { "status": 403, "message": "Active premium subscription required for the owner of the app." } }
+- [ ] A Linux server or VPS. This guide uses Ubuntu 22.04 or 24.04
+- [ ] Root or `sudo` access
+- [ ] A Spotify account. **A free account is fine**
+- [ ] About 20 minutes
+
+You do **not** need Spotify Premium, and you do not need to be an experienced developer. Every
+command below can be copied and pasted as it is written.
+
+> [!TIP]
+> If a command fails, look at [Troubleshooting](#troubleshooting) before trying something different.
+> Most problems have one specific cause and a one line fix.
+
+## Setup
+
+### 1. Install Java and Docker
+
+Lavalink needs Java 17 or newer. The token service runs in Docker.
+
+```bash
+sudo apt update
+sudo apt install -y openjdk-17-jre-headless docker.io docker-compose-v2 git curl
 ```
 
-Extended Quota Mode removes that restriction but is effectively closed to individuals. Since
-15 May 2025 it requires a company application, a launched service and a minimum of 250,000 monthly
-active users.
+Check both installed correctly:
 
-This configuration routes Spotify lookups through the Spotify web player token instead of the
-public Web API. The web player serves metadata to free accounts, so track, album and editorial
-playlist resolution keeps working when the developer application is dead.
+```bash
+java -version
+docker --version
+```
+
+Expected output, version numbers may differ slightly:
+
+```
+openjdk version "17.0.20" 2026-01-20
+Docker version 29.1.3, build afdd53b
+```
+
+Let your user run Docker without `sudo`, then apply it:
+
+```bash
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+### 2. Download this repository
+
+```bash
+cd ~
+git clone https://github.com/Aelshi-nui/spotify-meta-data.git
+cd spotify-meta-data
+ls
+```
+
+Expected output:
+
+```
+LICENSE  README.md  lavalink  scripts  tokener
+```
+
+### 3. Download Lavalink
+
+Create a working folder and download the official Lavalink jar into it:
+
+```bash
+mkdir -p ~/lavalink
+cd ~/lavalink
+curl -L -o Lavalink.jar \
+  https://github.com/lavalink-devs/Lavalink/releases/latest/download/Lavalink.jar
+```
+
+Copy the config from this repository next to the jar:
+
+```bash
+cp ~/spotify-meta-data/lavalink/application.yml ~/lavalink/application.yml
+ls -lh ~/lavalink
+```
+
+Expected output, roughly 95 MB for the jar:
+
+```
+-rw-rw-r-- 1 ubuntu ubuntu  96M Lavalink.jar
+-rw-rw-r-- 1 ubuntu ubuntu 5.2K application.yml
+```
+
+> [!NOTE]
+> You do not need to download any plugins. Lavalink reads the plugin list from `application.yml`
+> and downloads them itself the first time it starts.
+
+### 4. Start the Spotify token service
+
+This small service is what lets Spotify work without Premium. It runs a headless browser and hands
+Lavalink the same access token the Spotify web player uses.
+
+```bash
+cd ~/spotify-meta-data/tokener
+docker compose up -d
+```
+
+Check it is running:
+
+```bash
+docker ps
+```
+
+Expected output:
+
+```
+CONTAINER ID   IMAGE                                    STATUS         PORTS
+a1b2c3d4e5f6   ghcr.io/topi314/spotify-tokener:master   Up 10 seconds  0.0.0.0:8099->8080/tcp
+```
+
+Now test it. The first request takes up to 60 seconds because the browser has to start up, so be
+patient here:
+
+```bash
+curl -s http://127.0.0.1:8099/api/token
+```
+
+Expected output:
+
+```json
+{"accessToken":"BQC...","accessTokenExpirationTimestampMs":1789926052566,"isAnonymous":true}
+```
+
+If you see `accessToken`, this step is done. `isAnonymous` being `true` is correct for now. You will
+change that in the next step.
+
+<details>
+<summary><b>If the command returns nothing or hangs</b></summary>
+
+The browser may still be starting. Wait 60 seconds and try again. If it still fails, check the logs:
+
+```bash
+docker logs spotify-tokener
+```
+
+A healthy service logs:
+
+```
+INFO Server started address=0.0.0.0:8080
+```
+
+</details>
+
+### 5. Get your sp_dc cookie
+
+`sp_dc` is a login cookie from your own Spotify account. Giving it to the token service is what
+unlocks playlists such as Today's Top Hits.
+
+1. Open a **private window** or **incognito window** in your browser.
+2. Go to this address and log in to Spotify:
+   ```
+   https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F
+   ```
+3. Once logged in, press <kbd>F12</kbd> to open developer tools.
+4. Go to the **Application** tab. In Firefox this tab is called **Storage**.
+5. In the left sidebar, expand **Cookies**, then click `https://open.spotify.com`.
+6. Find the row named `sp_dc` and copy its **Value**. It is a long string of random characters.
+7. **Close the private window without clicking log out.** Logging out immediately breaks the cookie.
+
+Now check that your cookie works. Replace `PASTE_COOKIE_HERE` with the value you copied:
+
+```bash
+curl -s -H "Cookie: sp_dc=PASTE_COOKIE_HERE" http://127.0.0.1:8099/api/token | grep isAnonymous
+```
+
+| What you see | What it means |
+| --- | --- |
+| `"isAnonymous":false` | Correct. Your cookie works, continue to the next step |
+| `"isAnonymous":true` | The cookie was not accepted. Repeat this step carefully, especially point 7 |
 
 > [!IMPORTANT]
-> Spotify client credentials are still present in the config and are still used as a fallback.
-> If the app owner has Premium, both paths work and the setup is more resilient. If not, the
-> token service path carries everything on its own.
+> Keep this cookie private. It is a login session for your Spotify account. Never commit it to Git
+> and never post it anywhere.
+
+### 6. Get your Spotify client ID and secret
+
+1. Go to https://developer.spotify.com/dashboard and log in.
+2. Click **Create app**.
+3. Fill in any name and description.
+4. For **Redirect URI** enter `http://localhost:8080`. It is not used, but the form requires one.
+5. Tick the Web API checkbox, then click **Save**.
+6. Open your new app, click **Settings**.
+7. Copy the **Client ID**.
+8. Click **View client secret** and copy the **Client secret**.
+
+> [!NOTE]
+> These are still worth setting even though Spotify now requires the app owner to have Premium for
+> its public API. If you ever get Premium, this becomes a working backup path. Without Premium the
+> token service from step 4 does all the work on its own.
+
+### 7. Fill in the config
+
+Open the config file:
+
+```bash
+nano ~/lavalink/application.yml
+```
+
+Find and replace these three values. In `nano`, use <kbd>Ctrl</kbd>+<kbd>W</kbd> to search.
+
+| Find this text | Replace with |
+| --- | --- |
+| `CHANGE_ME_LAVALINK_PASSWORD` | Any password you invent. Your bot will use this to connect |
+| `SPOTIFY_CLIENT_ID` | The Client ID from step 6 |
+| `SPOTIFY_CLIENT_SECRET` | The Client secret from step 6 |
+| `SPOTIFY_SP_DC_COOKIE` | The `sp_dc` cookie from step 5 |
+
+Save with <kbd>Ctrl</kbd>+<kbd>O</kbd>, <kbd>Enter</kbd>, then exit with <kbd>Ctrl</kbd>+<kbd>X</kbd>.
+
+Now set the token service address. **Pick the row that matches your situation:**
+
+| How you run Lavalink | Set `customTokenEndpoint` to |
+| --- | --- |
+| Directly on the server, as in this guide | `http://127.0.0.1:8099/api/token` |
+| Inside a Docker container | `http://172.18.0.1:8099/api/token` |
+
+If you followed this guide exactly, use the first row:
+
+```bash
+sed -i 's|customTokenEndpoint: .*|customTokenEndpoint: http://127.0.0.1:8099/api/token|' \
+  ~/lavalink/application.yml
+grep customTokenEndpoint ~/lavalink/application.yml
+```
+
+> [!CAUTION]
+> If Lavalink runs in a container, do **not** use your server's public IP address here. A container
+> calling its own host's public address gets blocked by the host firewall, and the only symptom is
+> Spotify albums and playlists timing out after about 40 seconds. Use the Docker gateway address
+> instead. Find yours with:
+>
+> ```bash
+> docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}'
+> ```
+
+Leave everything else in the file alone. The other placeholders are for optional sources you do not
+need to set up now.
+
+<details>
+<summary><b>Optional values you can fill in later</b></summary>
+
+| Placeholder | What it enables | How to get it |
+| --- | --- | --- |
+| `APPLE_MUSIC_MEDIA_API_TOKEN` | Apple Music, `amsearch:` | Public token found in the `music.apple.com` page source |
+| `YOUTUBE_OAUTH_REFRESH_TOKEN` | YouTube age restricted videos | Google OAuth device flow |
+| `DEEZER_ARL` | Deezer, `dzsearch:` | Your own Deezer login cookie |
+| `DEEZER_MASTER_DECRYPTION_KEY` | Deezer audio | Not provided here |
+
+If you are not using Deezer, turn it off to avoid errors in the log. Open the config, find
+`deezer: true` under `sources:` and change it to `deezer: false`.
+
+</details>
+
+### 8. Start Lavalink
+
+```bash
+cd ~/lavalink
+java -jar Lavalink.jar
+```
+
+The first start takes a minute or two because Lavalink downloads its plugins. You will see lines
+like this scroll past:
+
+```
+Loaded 'youtube-plugin-f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3.jar'
+Loaded 'lavasrc-plugin-4.8.3.jar'
+Loaded 'NothingLink-be87d98.jar'
+```
+
+When you see this line, Lavalink is ready:
+
+```
+Lavalink is ready to accept connections.
+```
+
+Leave this terminal open for now. Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to stop it.
+
+<details>
+<summary><b>How to run Lavalink permanently in the background</b></summary>
+
+Running it by hand stops when you close your terminal. Use a systemd service instead:
+
+```bash
+sudo tee /etc/systemd/system/lavalink.service >/dev/null <<EOF
+[Unit]
+Description=Lavalink audio node
+After=network.target
+
+[Service]
+User=$USER
+WorkingDirectory=$HOME/lavalink
+ExecStart=/usr/bin/java -jar $HOME/lavalink/Lavalink.jar
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now lavalink
+```
+
+Check it and read the logs:
+
+```bash
+systemctl status lavalink
+journalctl -u lavalink -f
+```
+
+</details>
+
+### 9. Test that it works
+
+Open a **second terminal** and leave Lavalink running in the first.
+
+```bash
+sudo apt install -y python3-pip
+pip3 install websockets
+
+cd ~/spotify-meta-data
+./scripts/playtest.py --host localhost:2333 --password YOUR_PASSWORD --set sources
+```
+
+Replace `YOUR_PASSWORD` with the password you chose in step 7.
+
+Expected output:
+
+```
+  spsearch:blinding lights                       PLAYS   [Blinding Lights]
+  https://open.spotify.com/playlist/37i9dQZ...   PLAYS   [Bass Persuades]
+  amsearch:animals architects                    PLAYS   [Animals]
+  gaanasearch:arijit singh                       PLAYS   [Sanam Re]
+  ytsearch:never gonna give you up               PLAYS   [Rick Astley - Never Gonna ]
+  scsearch:flume never be like you               PLAYS   [Never Be Like You feat. Ka]
+
+  PLAYBACK: 6/7 passing
+```
+
+`PLAYS` means that source is fully working. Anything else means that one source has a problem, and
+the rest still work. Check [Troubleshooting](#troubleshooting).
+
+You can also test YouTube on its own:
+
+```bash
+./scripts/playtest.py --host localhost:2333 --password YOUR_PASSWORD --set youtube
+```
+
+> [!TIP]
+> This test attaches a real audio player, which is why it is trustworthy. Simply asking Lavalink to
+> look up a track is not a real test: lookups keep succeeding even when playback is completely
+> broken. A result of `STARTED then EXCEPTION` is a failure, not a pass.
+
+### 10. Connect your bot
+
+Your bot needs three values:
+
+| Setting | Value |
+| --- | --- |
+| Host | `localhost`, or your server IP if the bot runs elsewhere |
+| Port | `2333` |
+| Password | The password you set in step 7 |
+
+Once connected, these all work as normal play commands:
+
+```
+play https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
+play spsearch:blinding lights
+play ytsearch:never gonna give you up
+```
+
+> [!WARNING]
+> If your bot is on another machine, port 2333 is now reachable from the internet and protected only
+> by that password. Restrict it to your bot's IP address:
+>
+> ```bash
+> sudo ufw allow from YOUR_BOT_IP to any port 2333
+> sudo ufw deny 2333
+> ```
 
 ## Available sources
 
-Built-in sources enabled in `lavalink.server.sources`:
+Built-in sources, enabled under `lavalink.server.sources`:
 
-| Source | Enabled | Notes |
+| Source | Enabled | Prefix |
 | --- | --- | --- |
-| `bandcamp` | Yes | |
 | `soundcloud` | Yes | `scsearch:` |
-| `twitch` | Yes | |
-| `vimeo` | Yes | |
+| `bandcamp` | Yes | Direct links |
+| `twitch` | Yes | Direct links |
+| `vimeo` | Yes | Direct links |
 | `http` | Yes | Direct stream URLs |
-| `local` | Yes | Local filesystem |
-| `youtube` | **No** | Deliberately disabled, replaced by `youtube-plugin` |
+| `local` | Yes | Local files |
+| `youtube` | **No** | Replaced by the YouTube plugin below |
 
 > [!WARNING]
-> Keep the built-in `youtube` source set to `false`. Leaving it enabled alongside `youtube-plugin`
-> registers two competing YouTube source managers.
+> Leave the built-in `youtube` set to `false`. Turning it on while the YouTube plugin is installed
+> creates two competing YouTube sources and breaks playback.
 
 Sources added by plugins:
 
-| Prefix / Pattern | Source | Provided by |
+| Prefix or link type | Source | Plugin |
 | --- | --- | --- |
-| `ytsearch:` `ytmsearch:` | YouTube, YouTube Music | `youtube-plugin` |
-| `spsearch:` | Spotify | LavaSrc |
-| `amsearch:` | Apple Music | LavaSrc |
+| `ytsearch:` `ytmsearch:` | YouTube, YouTube Music | youtube-plugin |
+| `spsearch:` and Spotify links | Spotify | LavaSrc |
+| `amsearch:` and Apple Music links | Apple Music | LavaSrc |
 | `dzsearch:` | Deezer | LavaSrc |
-| `ftts://` | Flowery TTS | LavaSrc |
-| `gaanasearch:` | Gaana | `gaana-plugin` |
+| `ftts://` | Text to speech | LavaSrc |
+| `gaanasearch:` | Gaana | gaana-plugin |
 | `amzsearch:` | Amazon Music | NothingLink |
-| `pdsearch:` `pdrec:` | Pandora, Pandora recommendations | NothingLink |
+| `pdsearch:` `pdrec:` | Pandora | NothingLink |
 | `speak:` | Text to speech | DuncteBot |
-| `clypit:` `getyarn:` `mixcloud:` `ocremix:` `pixeldrain:` `reddit:` `soundgasm:` | Misc audio hosts | DuncteBot |
+| `clypit:` `getyarn:` `mixcloud:` `ocremix:` `pixeldrain:` `reddit:` `soundgasm:` | Various audio hosts | DuncteBot |
 
-Available in LavaSrc but disabled by default in this config because each needs its own credentials:
-`jiosaavn`, `qobuz`, `tidal`, `vkmusic`, `yandexmusic`, `ytdlp`.
+Also included: lyrics through LavaLyrics using `lrcLib`, Spotify and YouTube, extended search through
+LavaSearch, and sponsor segment skipping through SponsorBlock.
 
-Lyrics are exposed through LavaLyrics with `lrcLib`, `spotify` and `youtube` enabled. LavaSearch adds
-the extended search endpoint. SponsorBlock adds segment skipping.
+Available but switched off by default, because each needs its own account credentials: `jiosaavn`,
+`qobuz`, `tidal`, `vkmusic`, `yandexmusic`, `ytdlp`.
+
+> [!CAUTION]
+> Do not set `ytdlp: true` unless you have installed the `yt-dlp` program on the server. It registers
+> a second source also named `youtube`, which hides the real YouTube plugin and breaks YouTube along
+> with Spotify, Apple Music and every other source that depends on it.
+
+## Optional: production hardening
+
+Skip this section while you are getting started. Come back to it before you rely on the setup.
+
+<details>
+<summary><b>Restrict who can reach the token service</b></summary>
+
+The token service is published on port 8099 on all network interfaces. Anyone who can reach it can
+use your server to generate Spotify tokens. This locks it to addresses you list.
+
+```bash
+cd ~/spotify-meta-data
+sudo cp tokener/tokener-fw.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/tokener-fw.sh
+sudo cp tokener/tokener-allow.list.example /etc/tokener-allow.list
+sudo nano /etc/tokener-allow.list
+```
+
+Put one IP address per line, for example the server running your bot. Then install the service so
+the rules survive reboots and Docker restarts:
+
+```bash
+sudo cp tokener/tokener-fw.service /etc/systemd/system/
+sudo sed -i "s/NIC=eth0/NIC=$(ip route get 1.1.1.1 | grep -oP 'dev \K\S+')/" \
+  /etc/systemd/system/tokener-fw.service
+sudo systemctl enable --now tokener-fw.service
+```
+
+Confirm the rules are active:
+
+```bash
+sudo iptables -L DOCKER-USER -n -v
+```
+
+You should see one `RETURN` line per allowed address, and one `DROP` line for everything else.
 
 > [!NOTE]
-> `ytdlp` must stay `false` unless you install a `yt-dlp` binary on every node. Enabling it registers
-> a second source manager named `youtube`, which shadows `youtube-plugin` and breaks YouTube playback
-> along with every source that mirrors through it.
+> These rules match the container's internal port 8080, not the published port 8099. That is correct
+> and intentional, because Docker applies the `DOCKER-USER` chain before its own rules.
 
-## How it works
+</details>
+
+<details>
+<summary><b>Automatically restart the token service if it freezes</b></summary>
+
+The browser inside the token service can stop responding while Docker still reports the container as
+healthy, so Docker will never restart it on its own. This watchdog tests the real endpoint every ten
+minutes and restarts only when it genuinely fails.
+
+```bash
+cd ~/spotify-meta-data
+sudo cp tokener/tokener-watchdog.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/tokener-watchdog.sh
+sudo cp tokener/tokener-watchdog.cron /etc/cron.d/tokener-watchdog
+sudo chmod 644 /etc/cron.d/tokener-watchdog
+```
+
+Check whether it has ever needed to act:
+
+```bash
+cat /var/log/tokener-watchdog.log
+```
+
+An empty file or a missing file is good news. It means the service has never frozen.
+
+</details>
+
+## Troubleshooting
+
+| Problem | Cause and fix |
+| --- | --- |
+| Spotify searches work but playlists and albums fail | Token service is unreachable, or your cookie expired. Re-run the `isAnonymous` check from step 5 |
+| `isAnonymous` is `true` even with the cookie | Cookie was rejected. Redo step 5 and do not log out of the private window |
+| All Spotify requests fail with 403 | The app owner has no Premium. This is expected, and the token service handles Spotify on its own |
+| Playlists hang about 40 seconds then error | `customTokenEndpoint` is wrong. If Lavalink runs in Docker, use the gateway address, never the public IP |
+| Every request returns 401 or 403 | The Lavalink password is empty, or your bot is sending the wrong one |
+| Lavalink will not start, `Invalid status code for oauth2 token fetch: 400` | `refreshToken` holds an invalid value. Set it to `null` |
+| Lavalink will not start, `Default voice must be set` | `flowerytts.voice` is missing from the config |
+| Lavalink will not start, `ClassNotFoundException` | A plugin version is wrong. Use the versions in this repository exactly |
+| YouTube fails with `Must find sig function from script` | YouTube changed its player. Make sure `remoteCipher` is present in your config |
+| YouTube fails with `This video requires login` on every client | Usually the same cipher problem as the row above |
+| YouTube, Spotify and Apple Music all fail together | Expected. Spotify and Apple Music get their audio from YouTube, so YouTube failing takes them down too |
+| `amzsearch:` returns nothing | Amazon changed their API. Set `amazonmusic.enabled` to `false` until the plugin is updated |
+| Docker command says permission denied | Run `newgrp docker`, or log out and back in |
+
+Reading the logs:
+
+```bash
+# Lavalink started with systemd
+journalctl -u lavalink -n 100 --no-pager
+
+# the token service
+docker logs --tail 50 spotify-tokener
+```
+
+> [!TIP]
+> Lavalink log files contain colour codes that stop `grep` from matching. Strip them first:
+>
+> ```bash
+> sed -r "s/\x1B\[[0-9;]*[mGKH]//g" logs/spring.log | grep -i "requires login"
+> ```
+
+## Reference
+
+<details>
+<summary><b>How this works</b></summary>
 
 ```mermaid
 flowchart LR
     B[Discord bot] --> L[Lavalink]
-    L -->|metadata| T[spotify-tokener]
-    T -->|headless Chrome + sp_dc| S[open.spotify.com]
-    L -->|metadata| A[Apple Music, Gaana, Amazon, Pandora]
-    L -->|audio stream| Y[YouTube via youtube-plugin]
-    Y -->|signature extraction| C[yt-cipher]
+    L -->|track names| T[spotify-tokener]
+    T -->|headless browser| S[open.spotify.com]
+    L -->|track names| A[Apple Music, Gaana, Amazon, Pandora]
+    L -->|audio| Y[YouTube]
+    Y -->|signatures| C[yt-cipher]
 ```
 
-Spotify, Apple Music, Amazon Music and Pandora are all mirror sources. They resolve metadata, then
-Lavalink finds the audio on YouTube using the ISRC first and the title second:
+Spotify, Apple Music, Amazon Music and Pandora are metadata only. Lavalink reads the track details
+from them, then finds the actual audio on YouTube, matching by ISRC first and title second:
 
 ```yaml
 providers:
@@ -109,302 +584,79 @@ providers:
   - ytsearch:%QUERY%
 ```
 
-The practical consequence is that YouTube playback health determines the health of almost every
-source. If YouTube breaks, Spotify appears to break too.
+This is why YouTube breaking makes almost everything else appear broken too.
 
-## Prerequisites
-
-- Lavalink v4 (tested against 4.2.2)
-- Java 17 or newer
-- Docker and the Compose plugin, for the token service
-- A Spotify account. Free is sufficient for metadata
-- A Spotify developer application for `clientId` and `clientSecret`
-
-## Step 1: Deploy the token service
-
-The token service is [`topi314/spotify-tokener`](https://github.com/topi314/spotify-tokener), written
-by the author of LavaSrc. It runs a real headless Chrome against `open.spotify.com` and returns the
-access token the web player uses.
-
-<details>
-<summary><b>Option A: shared Docker network (recommended)</b></summary>
-
-If Lavalink also runs in Docker, put both on the same network and address the service by container
-name. No published port and no firewall rules are required.
-
-```bash
-docker network create lavalink_net   # skip if it already exists
-docker compose -f tokener/docker-compose.shared-network.yml up -d
-```
-
-Then in `application.yml`:
-
-```yaml
-customTokenEndpoint: http://spotify-tokener:8080/api/token
-```
+Spotify restricted its Development Mode in February 2026, and apps now require the owner to hold
+Premium. Extended access needs a company application and 250,000 monthly active users, so it is not
+realistic for individuals. The token service sidesteps this by using the web player token, which
+Spotify serves to free accounts.
 
 </details>
 
 <details>
-<summary><b>Option B: published port</b></summary>
+<summary><b>Why specific versions are pinned</b></summary>
 
-Use this when Lavalink runs outside Docker, or in a container you do not control, for example under
-a game panel.
+| Plugin | Version | Reason |
+| --- | --- | --- |
+| youtube-plugin | `f45bbb7aeb...` | A snapshot build. It contains a user agent fix that release 1.18.2 does not, and OAuth playback fails without it |
+| LavaSrc | `4.8.3` | Current release |
+| DuncteBot | `1.7.0` | **Not 1.7.1.** That release was published broken and crashes on startup |
+| NothingLink | `be87d98` | A specific commit. Release v1.0.6 predates an Amazon API fix and returns no results |
+| gaana-plugin | `1.0.2` | Current release |
 
-```bash
-docker compose -f tokener/docker-compose.yml up -d
-```
-
-Confirm it responds. Chrome takes roughly 60 seconds to warm up on first start:
-
-```bash
-curl -s http://127.0.0.1:8099/api/token
-```
-
-```json
-{ "accessToken": "BQ...", "accessTokenExpirationTimestampMs": 1789926052566, "isAnonymous": true }
-```
+> [!NOTE]
+> Lavalink will warn that a newer version of the YouTube plugin exists. That warning is harmless and
+> happens because the version is pinned to a commit instead of a release number.
 
 </details>
 
-> [!CAUTION]
-> When Lavalink runs inside a container and the token service is published on the host, address the
-> host through the Docker bridge gateway, not the host's public IP.
->
-> ```yaml
-> customTokenEndpoint: http://172.18.0.1:8099/api/token
-> ```
->
-> A container that dials the host's own public address sends the packet out and back in on the
-> physical interface, where a firewall rule intended for external traffic will drop it. The symptom
-> is a 40 to 90 second hang followed by a generic lookup error, while the same URL works fine from
-> any other machine. Find your gateway with:
->
-> ```bash
-> docker network inspect <network> -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}'
-> ```
+<details>
+<summary><b>Settings that matter more than they look</b></summary>
 
-## Step 2: Obtain your sp_dc cookie
-
-`sp_dc` is a long lived Spotify session cookie. Relaying it to the token service upgrades an
-anonymous token to an account token, which is what unlocks editorial playlists such as
-`37i9dQZF1DXcBWIGoYBM5M`.
-
-1. Open a **private or incognito** window.
-2. Go to `https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F` and log in.
-3. Open developer tools, then **Application**, then **Cookies**, then `https://open.spotify.com`.
-4. Copy the value of `sp_dc`.
-5. Close the window **without logging out**. Logging out invalidates the cookie immediately.
-
-Verify it produces an account token:
-
-```bash
-curl -s -H "Cookie: sp_dc=YOUR_SP_DC" http://127.0.0.1:8099/api/token | grep isAnonymous
-```
-
-| Response | Meaning |
-| --- | --- |
-| `"isAnonymous": false` | Correct. Account token issued, editorial playlists will resolve |
-| `"isAnonymous": true` | Cookie missing, expired or rejected. Editorial playlists will fail |
-
-> [!NOTE]
-> Independent projects consistently report a validity period of about one year. Treat that as a
-> ceiling rather than a guarantee. Changing your password, using "sign out everywhere", or logging
-> out of the originating browser session all invalidate it early.
-
-## Step 3: Configure Lavalink
-
-Copy `lavalink/application.yml` next to your `Lavalink.jar` and replace each placeholder:
-
-| Placeholder | Where to get it |
-| --- | --- |
-| `CHANGE_ME_LAVALINK_PASSWORD` | Any value you choose. Must not be empty or `null` |
-| `SPOTIFY_CLIENT_ID` | https://developer.spotify.com/dashboard |
-| `SPOTIFY_CLIENT_SECRET` | Same application |
-| `SPOTIFY_SP_DC_COOKIE` | [Step 2](#step-2-obtain-your-sp_dc-cookie) |
-| `APPLE_MUSIC_MEDIA_API_TOKEN` | Public token in the `music.apple.com` web bundle |
-| `YOUTUBE_OAUTH_REFRESH_TOKEN` | Google OAuth device flow, or leave `null` to disable |
-| `DEEZER_ARL` | Your own Deezer session cookie |
-| `DEEZER_MASTER_DECRYPTION_KEY` | Not supplied here. Leave as is or set `deezer: false` |
-
-> [!WARNING]
-> An empty or `null` Lavalink `password` makes the node unreachable. Every request returns 401 or 403.
->
-> A placeholder or invalid `refreshToken` prevents startup with
-> `Invalid status code for oauth2 token fetch: 400`. Use `refreshToken: null` to disable OAuth cleanly.
-
-Settings that matter more than they look:
-
-| Setting | Value | Reason |
+| Setting | Value | Why |
 | --- | --- | --- |
-| `preferPartnerApi` | `true` | Routes Spotify through the token service instead of the Web API |
-| `resolveArtistsInSearch` | `false` | LavaSrc otherwise batch calls `/v1/artists`, removed for Development Mode apps in February 2026. Leaving it `true` returns 403 on every search |
-| `remoteCipher.url` | set | Offloads YouTube signature extraction. Required in practice, see below |
-| `flowerytts.voice` | set | Startup fails with `Default voice must be set` if absent |
+| `preferPartnerApi` | `true` | Sends Spotify lookups through the token service. This is the setting that removes the Premium requirement |
+| `resolveArtistsInSearch` | `false` | If left `true`, LavaSrc calls an endpoint Spotify removed in February 2026, and every search returns 403 |
+| `remoteCipher.url` | set | Lets someone else keep up with YouTube's player changes. Without it, YouTube breaks whenever YouTube ships a new player |
+| `flowerytts.voice` | set | Lavalink refuses to start without it |
+| `password` | not empty | An empty or `null` password makes the node reject every request |
 
-### YouTube signature extraction
+</details>
 
-YouTube rotates its player script. When local extraction cannot parse a new one, the log shows:
+<details>
+<summary><b>How long does the sp_dc cookie last</b></summary>
 
-```
-Client [TVHTML5] failed: Must find sig function from script: /s/player/<hash>/player_embed.vflset/en_GB/base.js
-```
+Around one year, based on reports from several independent projects. Treat that as a maximum rather
+than a promise. It stops working early if you:
 
-`TVHTML5` is the only OAuth capable client, so once it fails the remaining clients hit the login wall
-and every track fails with `AllClientsFailedException`. Delegating extraction to
-[`kikkia/yt-cipher`](https://github.com/kikkia/yt-cipher) fixes this without waiting for a plugin
-release:
+- change your Spotify password
+- use "sign out everywhere" in your account settings
+- log out of the browser session you copied it from
 
-```yaml
-remoteCipher:
-  url: "https://cipher.kikkia.dev/"
-  password: ""
-  userAgent: "your-service-name"
-```
+When it expires, Spotify stops working entirely and `isAnonymous` becomes `true` again. Redo
+[step 5](#5-get-your-sp_dc-cookie) and restart Lavalink.
 
-A public instance is available at `https://cipher.kikkia.dev/` and requires no password. Self-host
-`yt-cipher` if you would rather not depend on a third party service at runtime.
-
-## Step 4: Verify
-
-`loadtracks` alone is not sufficient. It proves a track resolved, not that it plays. Resolution keeps
-succeeding on builds where playback is completely broken.
-
-`scripts/playtest.py` attaches a real player over the websocket and reports the result:
-
-```bash
-pip install websockets
-
-./scripts/playtest.py --host localhost:2333 --password YOUR_PASSWORD --set youtube
-./scripts/playtest.py --host localhost:2333 --password YOUR_PASSWORD --set sources
-```
-
-```
-https://www.youtube.com/watch?v=kJQP7kiw5Fk    PLAYS   [Luis Fonsi - Despacito ft.]
-
-PLAYBACK: 6/6 passing
-```
-
-> [!TIP]
-> A pass means the track started **and survived the grace window**. `TrackStartEvent` fires before
-> the audio format is resolved, so a naive test that stops at the start event reports success for
-> tracks that fail a fraction of a second later. A verdict of `STARTED then EXCEPTION` is a failure.
-
-Exit codes are `0` for all passing, `2` for partial failure and `1` for a connection problem, which
-makes the script usable from cron or CI.
-
-> [!TIP]
-> Do not validate YouTube using `dQw4w9WgXcQ` alone. It passes on builds where everything else fails.
-> The `--set youtube` list contains six videos chosen because they expose real breakage.
-
-## Production hardening
-
-### Restrict access to the token service
-
-Option B publishes the port on all interfaces. Anyone who can reach it can mint anonymous Spotify
-tokens using your server. The supplied script allowlists source addresses using the `DOCKER-USER`
-chain, which Docker consults before its own rules.
-
-```bash
-sudo cp tokener/tokener-fw.sh /usr/local/bin/
-sudo chmod +x /usr/local/bin/tokener-fw.sh
-sudo cp tokener/tokener-allow.list.example /etc/tokener-allow.list
-sudo nano /etc/tokener-allow.list
-
-sudo cp tokener/tokener-fw.service /etc/systemd/system/
-sudo sed -i "s/NIC=eth0/NIC=$(ip route get 1.1.1.1 | grep -oP 'dev \K\S+')/" \
-  /etc/systemd/system/tokener-fw.service
-sudo systemctl enable --now tokener-fw.service
-```
-
-The rules match the **container** port, 8080, not the published port. They are also scoped to the
-physical interface so that same host container traffic through the bridge gateway is unaffected.
-
-> [!NOTE]
-> Docker rebuilds its chains when the daemon restarts. The unit is ordered `After=docker.service` so
-> the rules are reapplied. Cloud provider firewalls and security groups are separate and should be
-> tightened as well.
-
-### Watchdog
-
-Chrome inside the token service can stop responding after roughly an hour while the container still
-reports a healthy `Up` status. Docker restart policies never trigger, because the process has not
-exited. The watchdog probes the real endpoint and restarts only on genuine failure.
-
-```bash
-sudo cp tokener/tokener-watchdog.sh /usr/local/bin/
-sudo chmod +x /usr/local/bin/tokener-watchdog.sh
-sudo cp tokener/tokener-watchdog.cron /etc/cron.d/tokener-watchdog
-sudo chmod 644 /etc/cron.d/tokener-watchdog
-```
-
-It retries once before acting, because a cold Chrome start legitimately takes about 60 seconds.
-Activity is logged to `/var/log/tokener-watchdog.log`.
-
-## Pinned versions and why
-
-| Dependency | Version | Reason for pinning |
-| --- | --- | --- |
-| `dev.lavalink.youtube:youtube-plugin` | `f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3` | Snapshot from the snapshots repository. Contains the PlayStation 4 user agent fix for the TV client. Release 1.18.2 does not, and OAuth playback fails without it |
-| `com.github.topi314.lavasrc:lavasrc-plugin` | `4.8.3` | Current release |
-| `com.dunctebot:skybot-lavalink-plugin` | `1.7.0` | **Not 1.7.1.** The 1.7.1 artifact ships with no source manager classes and fails at startup with `ClassNotFoundException` |
-| `com.github.Ankush26030:NothingLink` | `be87d98` | Commit, not release. Release v1.0.6 predates the Amazon Music API base URL fix and returns empty results |
-| `com.github.notdeltaxd:gaana-plugin` | `1.0.2` | Current release |
-
-> [!NOTE]
-> Lavalink's update checker reports a "newer version" when a plugin is pinned to a commit hash.
-> That warning is cosmetic. Full 40 character hashes are required, abbreviated hashes return 404.
-
-## Troubleshooting
-
-| Symptom | Likely cause |
-| --- | --- |
-| Spotify search works, albums and playlists fail | Token service unreachable, or `sp_dc` expired. Check `isAnonymous` |
-| All Spotify requests return 403 | App owner has no Premium. The token service path bypasses this |
-| `isAnonymous` is `true` despite sending the cookie | Cookie expired or was invalidated by logging out |
-| Lookup hangs 40 to 90 seconds, then errors | `customTokenEndpoint` uses the host public IP from inside a container. Use the bridge gateway |
-| `Must find sig function from script` | YouTube rotated its player. Enable `remoteCipher` |
-| `This video requires login` on every client | `TVHTML5` failed first, usually the cipher problem above |
-| `AllClientsFailedException` | Every YouTube client failed. Inspect the per client reasons in the log |
-| `ClassNotFoundException` at startup | DuncteBot 1.7.1. Downgrade to 1.7.0 |
-| `Default voice must be set` | `flowerytts.voice` is missing |
-| Every request returns 401 or 403 | Lavalink `password` is empty or `null` |
-| YouTube and all mirror sources fail together | Expected. Spotify, Apple Music, Amazon and Pandora mirror through YouTube |
-| `amzsearch:` returns empty | Amazon changed its API. Check for a newer NothingLink commit |
-
-Log inspection tips:
-
-```bash
-# strip ANSI colour codes, otherwise grep silently misses matches
-sed -r "s/\x1B\[[0-9;]*[mGKH]//g" logs/spring.log | grep -i "requires login"
-
-# isolate the current boot when a log spans several restarts
-awk '/Starting Launcher/{buf=""} {buf=buf$0 ORS} END{printf "%s", buf}' logs/spring.log
-```
+</details>
 
 ## Terms of service
 
-Reading metadata through the Spotify web player token is **not permitted** under the Spotify
-Developer Terms and Developer Policy. The token service returns this disclaimer in every response:
+Reading Spotify metadata through the web player token is **against the Spotify Developer Terms and
+Developer Policy**. The token service says so itself in every response:
 
 ```
 Usage of this endpoint is not permitted under the Spotify Developer Terms
 and Developer Policy, and applicable law
 ```
 
-The relevant clause prohibits using "any robot, spider, site search/retrieval application, or other
-tool to retrieve, duplicate, or index any portion of the Spotify Service or Spotify Content (which
-includes playlist data)". Obtaining credentials outside the provided authorization flow is also
-prohibited.
+To be clear about what is and is not happening here:
 
-For clarity about what this does and does not involve:
+- No audio is taken from Spotify, and no copy protection is bypassed. This is not stream ripping
+- The `sp_dc` cookie is your own login session. The risk sits with your own account, which Spotify
+  could log out or restrict
+- These endpoints are undocumented and change without warning, so expect it to break occasionally
 
-- No audio is retrieved from Spotify. No content protection is circumvented. This is not stream ripping
-- The `sp_dc` cookie is your own session. The practical risk sits with your own account, which Spotify
-  may log out or action
-- Undocumented endpoints change without notice, so expect breakage
-
-Use your own account and your own credentials, and understand the trade before deploying this.
+Use your own account and your own credentials, and make sure you are comfortable with that trade
+before deploying this.
 
 ## Credits
 
