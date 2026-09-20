@@ -20,11 +20,10 @@ for your Discord bot.
   - [4. Start the Spotify token service](#4-start-the-spotify-token-service)
   - [5. Get your sp_dc cookie](#5-get-your-sp_dc-cookie)
   - [6. Get your Spotify client ID and secret](#6-get-your-spotify-client-id-and-secret)
-  - [7. Get a YouTube token](#7-get-a-youtube-token)
-  - [8. Fill in the config](#8-fill-in-the-config)
-  - [9. Start Lavalink](#9-start-lavalink)
-  - [10. Test that it works](#10-test-that-it-works)
-  - [11. Connect your bot](#11-connect-your-bot)
+  - [7. Fill in the config](#7-fill-in-the-config)
+  - [8. Start Lavalink](#8-start-lavalink)
+  - [9. Test that it works](#9-test-that-it-works)
+  - [10. Connect your bot](#10-connect-your-bot)
 - [Available sources](#available-sources)
 - [Optional: production hardening](#optional-production-hardening)
 - [Troubleshooting](#troubleshooting)
@@ -226,38 +225,7 @@ curl -s -H "Cookie: sp_dc=PASTE_COOKIE_HERE" http://127.0.0.1:8099/api/token | g
 > its public API. If you ever get Premium, this becomes a working backup path. Without Premium the
 > token service from step 4 does all the work on its own.
 
-### 7. Get a YouTube token
-
-YouTube blocks most playback from server IP addresses unless the request is signed in. Without this
-token you will see `This video requires login` on every YouTube track, and because Spotify and Apple
-Music take their audio from YouTube, they will fail too.
-
-> [!IMPORTANT]
-> This step is **required**, not optional. Measured on a clean install: without a token, 1 of 6 test
-> videos played. With one, 6 of 6 played. Nothing else was changed.
-
-Use a **throwaway Google account**, not your personal one. Google may lock accounts used this way,
-and the token gives the plugin access to that account's YouTube.
-
-```bash
-cd ~/spotify-meta-data
-python3 -u ./scripts/get-youtube-token.py
-```
-
-The script prints a link and a code:
-
-```
-  1. Open this link:  https://www.google.com/device
-  2. Enter this code: PJY-WBC-WRN
-  3. Approve access. The code expires in 30 minutes.
-
-  Waiting for approval, leave this running ...
-```
-
-Open the link, enter the code, approve access. The script then prints your refresh token. Copy it,
-you need it in the next step.
-
-### 8. Fill in the config
+### 7. Fill in the config
 
 Open the config file:
 
@@ -265,7 +233,7 @@ Open the config file:
 nano ~/lavalink/application.yml
 ```
 
-Find and replace these five values. In `nano`, use <kbd>Ctrl</kbd>+<kbd>W</kbd> to search.
+Find and replace these four values. In `nano`, use <kbd>Ctrl</kbd>+<kbd>W</kbd> to search.
 
 | Find this text | Replace with |
 | --- | --- |
@@ -273,7 +241,6 @@ Find and replace these five values. In `nano`, use <kbd>Ctrl</kbd>+<kbd>W</kbd> 
 | `SPOTIFY_CLIENT_ID` | The Client ID from step 6 |
 | `SPOTIFY_CLIENT_SECRET` | The Client secret from step 6 |
 | `SPOTIFY_SP_DC_COOKIE` | The `sp_dc` cookie from step 5 |
-| `YOUTUBE_OAUTH_REFRESH_TOKEN` | The refresh token from step 7 |
 
 Save with <kbd>Ctrl</kbd>+<kbd>O</kbd>, <kbd>Enter</kbd>, then exit with <kbd>Ctrl</kbd>+<kbd>X</kbd>.
 
@@ -302,6 +269,19 @@ grep customTokenEndpoint ~/lavalink/application.yml
 > docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}'
 > ```
 
+> [!NOTE]
+> Apple Music works out of the box. The `mediaAPIToken` in the config is the public token Apple
+> serves to every visitor of `music.apple.com`, so it is not a secret. It does expire, currently on
+> 20 November 2026. When Apple Music stops working, fetch a fresh one:
+>
+> ```bash
+> curl -sL https://music.apple.com/us/new \
+>   | grep -oE '/assets/[A-Za-z0-9~._/-]+\.js' | sort -u \
+>   | while read f; do curl -s "https://music.apple.com$f" \
+>       | grep -oE 'eyJ[A-Za-z0-9_-]{30,}\.[A-Za-z0-9_-]{60,}\.[A-Za-z0-9_-]{20,}' | head -1; done \
+>   | head -1
+> ```
+
 Leave everything else in the file alone. The other placeholders are for optional sources you do not
 need to set up now.
 
@@ -310,7 +290,6 @@ need to set up now.
 
 | Placeholder | What it enables | How to get it |
 | --- | --- | --- |
-| `APPLE_MUSIC_MEDIA_API_TOKEN` | Apple Music, `amsearch:` | Public token found in the `music.apple.com` page source |
 | `DEEZER_ARL` | Deezer, `dzsearch:` | Your own Deezer login cookie |
 | `DEEZER_MASTER_DECRYPTION_KEY` | Deezer audio | Not provided here |
 
@@ -319,7 +298,7 @@ If you are not using Deezer, turn it off to avoid errors in the log. Open the co
 
 </details>
 
-### 9. Start Lavalink
+### 8. Start Lavalink
 
 ```bash
 cd ~/lavalink
@@ -342,6 +321,44 @@ Lavalink is ready to accept connections.
 ```
 
 Leave this terminal open for now. Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to stop it.
+
+#### Finish the YouTube sign in
+
+On first start you will also see this in the log:
+
+```
+==================================================
+!!! DO NOT AUTHORISE WITH YOUR MAIN ACCOUNT, USE A BURNER !!!
+OAUTH INTEGRATION: To give youtube-source access to your account, go to
+https://www.google.com/device and enter code VTQ-PYW-JJNP
+!!! DO NOT AUTHORISE WITH YOUR MAIN ACCOUNT, USE A BURNER !!!
+==================================================
+```
+
+YouTube blocks most playback from server IP addresses unless the request is signed in, so this is
+worth completing. Without it you get `This video requires login` on every YouTube track, and since
+Spotify and Apple Music take their audio from YouTube, those fail as well.
+
+1. Open https://www.google.com/device and enter the code from **your** log.
+2. Sign in with a **throwaway Google account**, as the plugin itself warns. Google may lock accounts
+   used this way.
+3. Approve access. Lavalink then prints your refresh token to the log.
+4. Paste that token into `application.yml` and set `skipInitialization` to `true`:
+
+```yaml
+    oauth:
+      enabled: true
+      refreshToken: "PASTE_THE_TOKEN_FROM_THE_LOG"
+      skipInitialization: true
+```
+
+5. Restart Lavalink. It should now log `YouTube access token refreshed successfully` instead of
+   printing a new code.
+
+> [!NOTE]
+> `skipInitialization: false` is what makes the plugin run this sign in flow and print the code.
+> Once you have a token, setting it to `true` skips the flow on every future start.
+
 
 <details>
 <summary><b>How to run Lavalink permanently in the background</b></summary>
@@ -378,7 +395,7 @@ journalctl -u lavalink -f
 
 </details>
 
-### 10. Test that it works
+### 9. Test that it works
 
 Open a **second terminal** and leave Lavalink running in the first.
 
@@ -390,7 +407,7 @@ cd ~/spotify-meta-data
 ./scripts/playtest.py --host localhost:2333 --password YOUR_PASSWORD --set sources
 ```
 
-Replace `YOUR_PASSWORD` with the password you chose in step 8.
+Replace `YOUR_PASSWORD` with the password you chose in step 7.
 
 Expected output:
 
@@ -419,7 +436,7 @@ You can also test YouTube on its own:
 > look up a track is not a real test: lookups keep succeeding even when playback is completely
 > broken. A result of `STARTED then EXCEPTION` is a failure, not a pass.
 
-### 11. Connect your bot
+### 10. Connect your bot
 
 Your bot needs three values:
 
@@ -427,7 +444,7 @@ Your bot needs three values:
 | --- | --- |
 | Host | `localhost`, or your server IP if the bot runs elsewhere |
 | Port | `2333` |
-| Password | The password you set in step 8 |
+| Password | The password you set in step 7 |
 
 Once connected, these all work as normal play commands:
 
@@ -570,7 +587,7 @@ An empty file or a missing file is good news. It means the service has never fro
 | Lavalink will not start, `Default voice must be set` | `flowerytts.voice` is missing from the config |
 | Lavalink will not start, `ClassNotFoundException` | A plugin version is wrong. Use the versions in this repository exactly |
 | YouTube fails with `Must find sig function from script` | YouTube changed its player. Make sure `remoteCipher` is present in your config |
-| YouTube fails with `This video requires login` on every client | No YouTube token. Complete [step 7](#7-get-a-youtube-token). This is the most common cause of a broken setup |
+| YouTube fails with `This video requires login` on every client | The YouTube sign in was not completed. See [Finish the YouTube sign in](#finish-the-youtube-sign-in). This is the most common cause of a broken setup |
 | YouTube, Spotify and Apple Music all fail together | Expected. Spotify and Apple Music get their audio from YouTube, so YouTube failing takes them down too |
 | `amzsearch:` returns nothing | Amazon changed their API. Set `amazonmusic.enabled` to `false` until the plugin is updated |
 | Docker command says permission denied | Run `newgrp docker`, or log out and back in |
